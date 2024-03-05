@@ -1,4 +1,4 @@
-package go_future
+package futures
 
 import (
 	"errors"
@@ -129,6 +129,21 @@ func (f *Future[T]) Or(other *Future[T]) *Future[T] {
 	})
 	return ret
 }
+func (f *Future[T]) Then(fc func(*T) *any) *Future[any] {
+	return Then(f, fc)
+}
+func (f *Future[T]) Delay(duration time.Duration) *Future[T] {
+	var ret = NewFuture[T]()
+	f.WhenComplete(func(t *T, err error) {
+		time.Sleep(duration)
+		if err != nil {
+			ret.CompleteExceptionally(err)
+			return
+		}
+		ret.Complete(t)
+	})
+	return ret
+}
 func Then[T any, V any](f *Future[T], fc func(*T) *V) *Future[V] {
 	var ret = NewFuture[V]()
 	f.WhenComplete(func(t *T, err error) {
@@ -149,7 +164,7 @@ func Then[T any, V any](f *Future[T], fc func(*T) *V) *Future[V] {
 	})
 	return ret
 }
-func Zip[T1 any, T2 any](f1 *Future[T1], f2 *Future[T2]) *Future[Tuple2[T1, T2]] {
+func And[T1 any, T2 any](f1 *Future[T1], f2 *Future[T2]) *Future[Tuple2[T1, T2]] {
 	var ret = NewFuture[Tuple2[T1, T2]]()
 	var waitGroup = sync.WaitGroup{}
 	waitGroup.Add(2)
@@ -196,6 +211,7 @@ func Error[T any](err error) *Future[T] {
 	f.CompleteExceptionally(err)
 	return f
 }
+
 func FromFunc[T any](f func() *T) *Future[T] {
 	var ret = NewFuture[T]()
 	go func() {

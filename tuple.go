@@ -1,4 +1,4 @@
-package go_future
+package futures
 
 type Tuple2[T1 any, T2 any] struct {
 	t1 *T1
