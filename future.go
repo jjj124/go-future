@@ -13,7 +13,17 @@ func (t *TimeoutErr) Error() string {
 	return "execute timeout !"
 }
 
-type Future[T any] struct {
+type Future[T any] interface {
+	BlockingGet() (*T, error)
+	BlockingUntil(duration time.Duration) (*T, error)
+	Complete(value *T) bool
+	CompleteExceptionally(e error) bool
+	WhenComplete(fc func(*T, error)) Future[T]
+	Or(other Future[T]) Future[T]
+	Then(fc func(*T) *any) Future[any]
+	Delay(duration time.Duration) Future[T]
+}
+type future[T any] struct {
 	val    *T
 	err    error
 	ch     []chan int
@@ -21,17 +31,7 @@ type Future[T any] struct {
 	result int
 }
 
-func NewFuture[T any]() *Future[T] {
-	var x = &Future[T]{
-		nil,
-		nil,
-		make([]chan int, 0),
-		&sync.Mutex{},
-		0,
-	}
-	return x
-}
-func (f *Future[T]) newWaiter() chan int {
+func (f *future[T]) newWaiter() chan int {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	var ch = make(chan int, 1)
@@ -41,7 +41,7 @@ func (f *Future[T]) newWaiter() chan int {
 	}
 	return ch
 }
-func (f *Future[T]) BlockingGet() (*T, error) {
+func (f *future[T]) BlockingGet() (*T, error) {
 	var ch = f.newWaiter()
 	var r = <-ch
 	if r > 0 {
@@ -50,7 +50,7 @@ func (f *Future[T]) BlockingGet() (*T, error) {
 		return nil, f.err
 	}
 }
-func (f *Future[T]) BlockingUntil(duration time.Duration) (*T, error) {
+func (f *future[T]) BlockingUntil(duration time.Duration) (*T, error) {
 	var ch = f.newWaiter()
 	select {
 	case r := <-ch:
@@ -63,7 +63,7 @@ func (f *Future[T]) BlockingUntil(duration time.Duration) (*T, error) {
 		return nil, &TimeoutErr{}
 	}
 }
-func (f *Future[T]) Complete(value *T) bool {
+func (f *future[T]) Complete(value *T) bool {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	if f.result != 0 {
@@ -77,7 +77,7 @@ func (f *Future[T]) Complete(value *T) bool {
 	}
 	return true
 }
-func (f *Future[T]) CompleteExceptionally(e error) bool {
+func (f *future[T]) CompleteExceptionally(e error) bool {
 	f.lock.Lock()
 	defer f.lock.Unlock()
 	if f.result != 0 {
@@ -90,7 +90,7 @@ func (f *Future[T]) CompleteExceptionally(e error) bool {
 	}
 	return true
 }
-func (f *Future[T]) WhenComplete(fc func(*T, error)) *Future[T] {
+func (f *future[T]) WhenComplete(fc func(*T, error)) Future[T] {
 	var ch = f.newWaiter()
 	var ret = NewFuture[T]()
 	go func() {
@@ -112,7 +112,7 @@ func (f *Future[T]) WhenComplete(fc func(*T, error)) *Future[T] {
 	}()
 	return ret
 }
-func (f *Future[T]) Or(other *Future[T]) *Future[T] {
+func (f *future[T]) Or(other Future[T]) Future[T] {
 	var ret = NewFuture[T]()
 	f.WhenComplete(func(t *T, err error) {
 		if err == nil {
@@ -129,10 +129,10 @@ func (f *Future[T]) Or(other *Future[T]) *Future[T] {
 	})
 	return ret
 }
-func (f *Future[T]) Then(fc func(*T) *any) *Future[any] {
+func (f *future[T]) Then(fc func(*T) *any) Future[any] {
 	return Then(f, fc)
 }
-func (f *Future[T]) Delay(duration time.Duration) *Future[T] {
+func (f *future[T]) Delay(duration time.Duration) Future[T] {
 	var ret = NewFuture[T]()
 	f.WhenComplete(func(t *T, err error) {
 		time.Sleep(duration)
@@ -144,7 +144,17 @@ func (f *Future[T]) Delay(duration time.Duration) *Future[T] {
 	})
 	return ret
 }
-func Then[T any, V any](f *Future[T], fc func(*T) *V) *Future[V] {
+func NewFuture[T any]() Future[T] {
+	var x = &future[T]{
+		nil,
+		nil,
+		make([]chan int, 0),
+		&sync.Mutex{},
+		0,
+	}
+	return x
+}
+func Then[T any, V any](f Future[T], fc func(*T) *V) Future[V] {
 	var ret = NewFuture[V]()
 	f.WhenComplete(func(t *T, err error) {
 		if err != nil {
@@ -164,7 +174,7 @@ func Then[T any, V any](f *Future[T], fc func(*T) *V) *Future[V] {
 	})
 	return ret
 }
-func And[T1 any, T2 any](f1 *Future[T1], f2 *Future[T2]) *Future[Tuple2[T1, T2]] {
+func And[T1 any, T2 any](f1 Future[T1], f2 Future[T2]) Future[Tuple2[T1, T2]] {
 	var ret = NewFuture[Tuple2[T1, T2]]()
 	var waitGroup = sync.WaitGroup{}
 	waitGroup.Add(2)
@@ -201,18 +211,17 @@ func And[T1 any, T2 any](f1 *Future[T1], f2 *Future[T2]) *Future[Tuple2[T1, T2]]
 	}()
 	return ret
 }
-func Just[T any](t *T) *Future[T] {
+func Just[T any](t *T) Future[T] {
 	var f = NewFuture[T]()
 	f.Complete(t)
 	return f
 }
-func Error[T any](err error) *Future[T] {
+func Error[T any](err error) Future[T] {
 	var f = NewFuture[T]()
 	f.CompleteExceptionally(err)
 	return f
 }
-
-func FromFunc[T any](f func() *T) *Future[T] {
+func FromFunc[T any](f func() *T) Future[T] {
 	var ret = NewFuture[T]()
 	go func() {
 		defer func() {
